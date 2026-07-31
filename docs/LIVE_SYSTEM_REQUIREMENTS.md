@@ -76,6 +76,9 @@ The AgenticXR Claude path does not require:
 
 ## 3. Server software
 
+On a macOS server host, read section 13 first. Two platform blockers there stop
+`npm install` before it finishes.
+
 - [ ] Node.js and npm are installed.
 - [ ] Repository dependencies are installed from `Server`.
 - [ ] Ubiq, Claude Agent SDK, MCP SDK, and Zod pass the setup doctor.
@@ -102,6 +105,8 @@ Expected:
 - [ ] `npm run test:integration` ends with `[mock_integration] PASS`.
 
 ## 4. Windows and LAN configuration
+
+For a macOS host, see section 13.4 instead of the PowerShell firewall rule below.
 
 - [ ] Server PC and Quest are on the same LAN.
 - [ ] Guest/client isolation is disabled.
@@ -287,3 +292,96 @@ Still requires user/device validation:
 - `docs/goal-loops-and-speculative-futures.md`
 - `docs/study-logging-schema.md`
 - `docs/progress-log.md`
+
+## 13. macOS server host
+
+Sections 3 and 4 assume a Windows server PC and PowerShell. This section covers an
+Apple Silicon Mac acting as the server host. Verified on macOS `26.5.1`, `arm64`,
+Node `18.20.8`, npm `10.8.2`.
+
+### 13.1 The repository path must not contain a colon
+
+- [ ] No directory in the absolute path to the repository contains `:`.
+
+This is not cosmetic. npm prepends `node_modules/.bin` to `PATH`, and `PATH` is
+colon-delimited, so a colon anywhere in the path splits that entry into two invalid
+directories. Every package with a build script then fails to find its own tooling.
+The symptom is misleading:
+
+```
+npm error code 127
+npm error command sh -c node-gyp-build
+npm error sh: node-gyp-build: command not found
+```
+
+Reproduced with two otherwise identical empty projects: installing `bufferutil` under
+`.../hci:ai proj/` fails with the error above, while `.../hci-ai proj/` succeeds.
+Rename the directory. There is no workaround that keeps the colon.
+
+### 13.2 wrtc does not build on Apple Silicon
+
+- [ ] `wrtc` is absent from `Server/vendor/ubiq/package.json` dependencies.
+
+`wrtc@0.4.7` publishes no `darwin-arm64` prebuilt binary, so its install script 404s
+on `https://node-webrtc.s3.amazonaws.com/wrtc/v0.4.7/Release/darwin-arm64.tar.gz` and
+aborts the entire install before the Claude Agent SDK is fetched. The package is
+referenced only by `vendor/ubiq/samples/rtcpeerconnection/app.js`, a Ubiq sample this
+project never runs. It is removed from the vendored dependency list. Restore it only
+if that sample is ever needed, and not on an arm64 host.
+
+### 13.3 Environment and commands
+
+Node 18 is sufficient. The Claude Agent SDK declares `engines.node >= 18.0.0`.
+
+```bash
+cd "/path/to/agenticXR/Server"
+npm install
+
+export AGENTICXR_MODE="claude"
+export ANTHROPIC_API_KEY="your-real-key"
+export STT_HTTP_URL="http://STT-HOST:50101/stt/transcribe"
+
+npm run doctor
+npm test
+npm run test:integration
+```
+
+Keeping the key out of shell history is easier with a gitignored file:
+
+```bash
+set -a; . ./.env.local; set +a
+```
+
+### 13.4 Firewall and LAN
+
+macOS has no `New-NetFirewallRule`. The application firewall is off by default, in
+which case inbound TCP `8009` needs no rule. Check and configure with:
+
+```bash
+/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate
+/usr/libexec/ApplicationFirewall/socketfilterfw --add "$(which node)"
+/usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$(which node)"
+```
+
+Find the LAN address Unity and the Quest must target with `ipconfig getifaddr en0`,
+falling back to `en1` on wired adapters. Do not use `localhost`.
+
+- [ ] If the Mac is on an institutional or campus network, confirm client isolation is
+      disabled. Large managed subnets frequently block peer-to-peer traffic between
+      wireless clients, which prevents the Quest from reaching the Mac even though
+      both devices report a valid address on the same network.
+
+### 13.5 Verified state on macOS
+
+Confirmed after 13.1 and 13.2 are satisfied:
+
+- [x] `npm install` completes.
+- [x] `npm test` passes, 258 assertions.
+- [x] `npm run test:integration` ends with `[mock_integration] PASS`, using a real
+      local Ubiq room server and real MCP sessions against a mock Unity peer.
+- [x] `AGENTICXR_MODE=claude npm run doctor` reports only `ANTHROPIC_API_KEY` and
+      `STT_HTTP_URL` missing, confirming the legacy Python environment and OpenAI key
+      are not required on the Claude path.
+
+Still unverified from a macOS host, and blocked only by credentials rather than by
+platform: every item in section 11's "Still requires user/device validation" list.
